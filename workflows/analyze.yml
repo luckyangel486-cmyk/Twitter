@@ -1,0 +1,36 @@
+name: Analyseer geuploade tweets
+
+on:
+  push:
+    paths:
+      - "data/uploads/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Python installeren
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependencies installeren
+        run: pip install -r requirements.txt
+
+      - name: Analyse draaien
+        run: python analyze.py
+
+      - name: Resultaat committen
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add data/
+          git diff --quiet --cached || git commit -m "Analyse bijgewerkt: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
