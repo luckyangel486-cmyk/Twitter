@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X AI Analyse</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --card: #16202a;
+    --accent: #1d9bf0;
+    --text: #e7e9ea;
+    --muted: #71767b;
+    --border: #2f3336;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 2rem 1rem;
+  }
+  .container { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+  .subtitle { color: var(--muted); margin-bottom: 2rem; font-size: 0.95rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin-bottom: 1.25rem;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.4rem; }
+  input[type="password"], input[type="text"] {
+    width: 100%;
+    padding: 0.65rem;
+    background: #000;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+  }
+  input[type="file"] {
+    width: 100%;
+    padding: 0.65rem 0;
+    color: var(--text);
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    border-radius: 999px;
+    padding: 0.7rem 1.4rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { margin-top: 1rem; font-size: 0.9rem; color: var(--muted); white-space: pre-wrap; }
+  .status.error { color: #f4212e; }
+  .status.ok { color: #00ba7c; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin: 1rem 0; }
+  .metric { background: #000; border-radius: 8px; padding: 0.75rem; text-align: center; }
+  .metric .value { font-size: 1.3rem; font-weight: 700; }
+  .metric .label { font-size: 0.75rem; color: var(--muted); }
+  .rec-list { line-height: 1.8; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; }
+  td, th { border-bottom: 1px solid var(--border); padding: 0.4rem; text-align: left; }
+  .checkbox-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; font-size: 0.85rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🧚 X (Twitter) AI Analyse</h1>
+  <p class="subtitle">Upload je tweets, alles draait via GitHub Actions in je eigen repo.</p>
+
+  <div class="card">
+    <label for="token">GitHub Personal Access Token (fine-grained, Contents: Read/write op deze repo)</label>
+    <input type="password" id="token" placeholder="github_pat_...">
+    <div class="checkbox-row">
+      <input type="checkbox" id="rememberToken">
+      <label for="rememberToken" style="margin:0;">Onthoud token in deze browser (alleen doen op je eigen apparaat)</label>
+    </div>
+
+    <label for="file">Bestand (tweets.js uit je X-archief, of een .csv export)</label>
+    <input type="file" id="file" accept=".js,.json,.csv">
+
+    <button id="uploadBtn">Uploaden &amp; analyseren</button>
+    <div class="status" id="status"></div>
+  </div>
+
+  <div class="card" id="resultsCard" style="display:none;">
+    <h2 style="margin-top:0;">📊 Resultaten</h2>
+    <div class="metric-grid" id="metrics"></div>
+    <div id="recommendations"></div>
+    <h3>📈 Onderpresterende tweets</h3>
+    <table id="underTable"></table>
+    <h3>🔥 Best presterende tweets t.o.v. verwachting</h3>
+    <table id="overTable"></table>
+  </div>
+</div>
+
+<script>
+// ==============================
+// CONFIG — pas dit aan naar jouw repo
+// ==============================
+const OWNER = "AlexHetzelfde";
+const REPO = "twitter-analysis";
+const BRANCH = "main";
+const UPLOAD_PATH_PREFIX = "data/uploads/";
+const RESULTS_PATH = "data/results.json";
+
+const tokenInput = document.getElementById("token");
+const rememberBox = document.getElementById("rememberToken");
+const fileInput = document.getElementById("file");
+const uploadBtn = document.getElementById("uploadBtn");
+const statusEl = document.getElementById("status");
+
+// Token onthouden (optioneel, alleen lokaal in deze browser)
+if (localStorage.getItem("gh_token")) {
+  tokenInput.value = localStorage.getItem("gh_token");
+  rememberBox.checked = true;
+}
+
+function setStatus(msg, type = "") {
+  statusEl.textContent = msg;
+  statusEl.className = "status " + type;
+}
+
+function ghHeaders(token) {
+  return {
+    "Authorization": `Bearer ${token}`,
+    "Accept": "application/vnd.github+json",
+  };
+}
+
+async function uploadFile(token, file) {
+  const arrayBuffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const base64Content = btoa(binary);
+
+  const path = UPLOAD_PATH_PREFIX + Date.now() + "_" + file.name;
+  const url = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`;
+
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: ghHeaders(token),
+    body: JSON.stringify({
+      message: `Upload ${file.name} voor analyse`,
+      content: base64Content,
+      branch: BRANCH,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || `Upload mislukt (${res.status})`);
+  }
+}
+
+async function fetchResults(token) {
+  const url = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${RESULTS_PATH}`;
+  const res = await fetch(url, { headers: ghHeaders(token), cache: "no-store" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Kon resultaten niet ophalen (${res.status})`);
+  const data = await res.json();
+  const jsonText = decodeURIComponent(escape(atob(data.content)));
+  return JSON.parse(jsonText);
+}
+
+function renderResults(result) {
+  document.getElementById("resultsCard").style.display = "block";
+
+  const metricsEl = document.getElementById("metrics");
+  metricsEl.innerHTML = `
+    <div class="metric"><div class="value">${result.total_tweets}</div><div class="label">Totaal tweets</div></div>
+    <div class="metric"><div class="value">${result.gem_engagement.toFixed(1)}</div><div class="label">Gem. engagement</div></div>
+    <div class="metric"><div class="value">${(result.pct_media * 100).toFixed(0)}%</div><div class="label">% met media</div></div>
+  `;
+
+  const recEl = document.getElementById("recommendations");
+  if (result.model_trained) {
+    recEl.innerHTML = `
+      <p><strong>R²:</strong> ${result.metrics.r2.toFixed(3)} &nbsp; <strong>MAE:</strong> ${result.metrics.mae.toFixed(2)} &nbsp; <strong>Cross-val R²:</strong> ${result.metrics.cv_mean.toFixed(3)}</p>
+      <div class="rec-list">
+        <strong>🚀 Aanbevolen aanpak:</strong><br>
+        Tijdstip: rond ${result.best_combo.uur}:00<br>
+        Hashtags: ${result.best_combo.hashtags}<br>
+        Media: ${result.best_combo.media ? "Ja" : "Nee"}<br>
+        Geschatte engagement: ${result.best_score.toFixed(1)}
+      </div>
+    `;
+  } else {
+    recEl.innerHTML = `<p>${result.model_message}</p>`;
+  }
+
+  const fillTable = (tableEl, rows) => {
+    tableEl.innerHTML = "<tr><th>Tweet</th><th>Engagement</th><th>Verwacht</th></tr>" +
+      rows.map(r => `<tr><td>${(r.text || "").slice(0, 60)}</td><td>${r.total_engagement}</td><td>${r.ai_prediction?.toFixed(1) ?? "-"}</td></tr>`).join("");
+  };
+  fillTable(document.getElementById("underTable"), result.underperformers || []);
+  fillTable(document.getElementById("overTable"), result.overperformers || []);
+}
+
+async function pollForResults(token, sinceTimestamp) {
+  setStatus("⏳ Bestand geüpload. GitHub Action draait nu... (kan 30-90 sec duren)");
+  const maxTries = 40;
+  for (let i = 0; i < maxTries; i++) {
+    await new Promise(r => setTimeout(r, 6000));
+    try {
+      const result = await fetchResults(token);
+      if (result && result.generated_at > sinceTimestamp) {
+        setStatus("✅ Analyse klaar!", "ok");
+        renderResults(result);
+        return;
+      }
+    } catch (e) {
+      // negeer tijdelijke fouten tijdens polling, blijf proberen
+    }
+    setStatus(`⏳ Nog aan het wachten op de Action... (${i + 1}/${maxTries})`);
+  }
+  setStatus("⚠️ Timeout — check zelf de Actions-tab in je repo of het gelukt is.", "error");
+}
+
+uploadBtn.addEventListener("click", async () => {
+  const token = tokenInput.value.trim();
+  const file = fileInput.files[0];
+
+  if (!token) return setStatus("Vul eerst je GitHub token in.", "error");
+  if (!file) return setStatus("Kies eerst een bestand.", "error");
+
+  if (rememberBox.checked) {
+    localStorage.setItem("gh_token", token);
+  } else {
+    localStorage.removeItem("gh_token");
+  }
+
+  uploadBtn.disabled = true;
+  try {
+    setStatus("📤 Bestand wordt geüpload naar GitHub...");
+    const since = Date.now();
+    await uploadFile(token, file);
+    await pollForResults(token, since);
+  } catch (e) {
+    setStatus("❌ Fout: " + e.message, "error");
+  } finally {
+    uploadBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
